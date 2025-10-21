@@ -116,6 +116,38 @@ const InjectStyles = () => {
   }, []);
   return null;
 };
+const LargeCodeBlock = ({ code }) => {
+  const [expanded, setExpanded] = useState(false);
+  const lineCount = code.split("\n").length;
+  const isLarge = lineCount > 200;
+
+  const displayCode = expanded
+    ? code
+    : code.split("\n").slice(0, 200).join("\n") +
+    (isLarge ? "\n\n... (truncated, click expand to see full)" : "");
+
+  return (
+    <div className="relative">
+      <SyntaxHighlighter
+        language="javascript"
+        style={oneDark}
+        wrapLongLines
+        className="rounded-lg text-base"
+      >
+        {displayCode}
+      </SyntaxHighlighter>
+
+      {isLarge && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="absolute top-2 right-2 bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-sm"
+        >
+          {expanded ? "Collapse" : "Expand"}
+        </button>
+      )}
+    </div>
+  );
+};
 
 // ================= ROOM =================
 const Room = () => {
@@ -133,16 +165,22 @@ const Room = () => {
     socket.emit("join-room", roomId);
 
     socket.on("room-messages", (msgs) => {
-      setMessages(msgs);
-      localStorage.setItem("latestMessages_" + roomId, JSON.stringify(msgs));
+      const trimmed = msgs.slice(-50); // keep only last 50
+      setMessages(trimmed);
+      localStorage.setItem("latestMessages_" + roomId, JSON.stringify(trimmed));
     });
 
+
     socket.on("room-message", (msg) => {
-      setMessages((prev) => {
-        const updated = [...prev, msg];
-        localStorage.setItem("latestMessages_" + roomId, JSON.stringify(updated));
-        return updated;
-      });
+      if (msg.type === "text") {
+        setTextContent(msg.content); // 🟢 live shared typing
+      } else {
+        setMessages((prev) => {
+          const updated = [...prev, msg];
+          localStorage.setItem("latestMessages_" + roomId, JSON.stringify(updated));
+          return updated;
+        });
+      }
     });
 
     // ✅ fix: handle file removal by fileName
@@ -179,11 +217,13 @@ const Room = () => {
     (e) => {
       const value = e.target.value;
       setTextContent(value);
-      clearTimeout(typingTimeout.current);
-      typingTimeout.current = setTimeout(() => {
-        if (value.trim())
-          socket.emit("room-message", { roomId, type: "text", content: value });
-      }, 400);
+
+      // 🟢 broadcast current typing to all in the room
+      socket.emit("room-message", {
+        roomId,
+        type: "text",
+        content: value,
+      });
     },
     [roomId]
   );
@@ -310,9 +350,8 @@ const Room = () => {
 
       {/* Sidebar */}
       <div
-        className={`fixed top-0 left-0 h-full w-80 bg-gray-800 border-r border-gray-700 z-50 transform transition-transform duration-300 ${
-          sidebarOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
+        className={`fixed top-0 left-0 h-full w-80 bg-gray-800 border-r border-gray-700 z-50 transform transition-transform duration-300 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
       >
         <div className="p-4 mt-14">
           <h3 className="text-lg font-bold mb-4">📌 Last 5 Messages</h3>
@@ -370,20 +409,31 @@ const Room = () => {
                 className="bg-gray-700 text-white border border-gray-600 rounded-lg px-4 py-2"
               >
                 <option value="text">✍️ Text / Code</option>
-                <option value="image">🖼️ Image</option>
-                <option value="pdf">📄 PDF</option>
-                <option value="document">📑 Document</option>
+                <option value="image">🖼️ Image (PNG, JPG, SVG)</option>
+                <option value="pdf">📕 PDF</option>
+                <option value="document">📘 Document (Word, Excel, PPT, etc.)</option>
+                <option value="audio">🎵 Audio</option>
+                <option value="video">🎥 Video</option>
+                <option value="archive">🧩 Compressed (ZIP, RAR, 7z, TAR)</option>
+                <option value="other">📦 Other File Types</option>
               </select>
+
             </div>
 
             {/* Text or Upload */}
             {contentType === "text" ? (
-              <textarea
-                className="w-full h-60 bg-gray-900 border border-gray-700 rounded-lg p-4 text-lg text-white mb-4"
-                placeholder="Start typing..."
-                value={textContent}
-                onChange={handleTextChange}
-              />
+              <div className="relative w-full h-[70vh]">
+                {/* 🆕 Copy button at top-right of textarea */}
+                <div className="absolute right-4 top-2 z-10">
+                  <CopyButton text={textContent} />
+                </div>
+                <textarea
+                  className="w-full h-full bg-gray-900 border border-gray-700 rounded-lg p-4 text-lg text-white resize-none"
+                  placeholder="Start typing..."
+                  value={textContent}
+                  onChange={handleTextChange}
+                />
+              </div>
             ) : (
               <div className="flex flex-col items-center mb-6">
                 <label className="cursor-pointer bg-indigo-600 text-white px-6 py-2 rounded-lg">
@@ -395,12 +445,24 @@ const Room = () => {
                       contentType === "image"
                         ? "image/*"
                         : contentType === "pdf"
-                        ? "application/pdf"
-                        : ".doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx"
+                          ? "application/pdf"
+                          : contentType === "document"
+                            ? ".doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv"
+                            : contentType === "audio"
+                              ? "audio/*"
+                              : contentType === "video"
+                                ? "video/*"
+                                : contentType === "archive"
+                                  ? ".zip,.rar,.7z,.tar,.gz"
+                                  : "*/*" // ✅ for "other" type, allow everything
                     }
-                    onChange={handleFileUpload}
+                    onChange={(e) => {
+                      handleFileUpload(e);
+                      e.target.value = ""; // ✅ allows re-uploading same file
+                    }}
                     className="hidden"
                   />
+
                 </label>
                 {uploadProgress && (
                   <div className="w-64 bg-gray-700 mt-4 rounded-lg overflow-hidden shadow-inner">
@@ -417,64 +479,54 @@ const Room = () => {
             )}
 
             {/* Preview latest */}
-            <div className="flex-1 overflow-y-auto pr-1">
-              {messages.length > 0 && (
-                <div className="relative bg-gray-700 rounded-xl shadow-md p-4">
-                  {messages[messages.length - 1].type === "text" ? (
-                    <CopyButton
-                      text={messages[messages.length - 1].content}
-                      className="absolute top-2 right-2 z-10"
-                    />
-                  ) : (
-                    <div className="absolute top-2 right-2 z-10">
-                      <DownloadButtonWithExpire
-                        fileName={messages[messages.length - 1].fileName}
-                        fileData={messages[messages.length - 1].data}
-                        uploadedAt={messages[messages.length - 1].uploadedAt}
-                        removed={messages[messages.length - 1].removed}
-                      />
+            {contentType !== "text" && (
+              <div className="flex-1 overflow-y-auto pr-1">
+                {messages.length > 0 &&
+                  messages[messages.length - 1].type === "file" && (
+                    <div className="relative bg-gray-700 rounded-xl shadow-md p-4">
+                      <div className="absolute top-2 right-2 z-10">
+                        <DownloadButtonWithExpire
+                          fileName={messages[messages.length - 1].fileName}
+                          fileData={messages[messages.length - 1].data}
+                          uploadedAt={messages[messages.length - 1].uploadedAt}
+                          removed={messages[messages.length - 1].removed}
+                        />
+                      </div>
+
+                      <div className="overflow-y-auto rounded-b-xl max-h-[80vh] mt-10">
+                        {/* Image preview */}
+                        {messages[messages.length - 1].type === "file" &&
+                          messages[messages.length - 1].fileType?.startsWith("image/") && (
+                            <img
+                              src={messages[messages.length - 1].data}
+                              alt={messages[messages.length - 1].fileName}
+                              className="max-h-[70vh] mx-auto rounded-lg shadow-lg border"
+                            />
+                          )}
+
+                        {/* PDF preview */}
+                        {messages[messages.length - 1].type === "file" &&
+                          messages[messages.length - 1].fileType === "application/pdf" && (
+                            <embed
+                              src={messages[messages.length - 1].data}
+                              type="application/pdf"
+                              className="w-full h-[70vh] border rounded-lg shadow-lg"
+                            />
+                          )}
+
+                        {/* Other file types */}
+                        {messages[messages.length - 1].type === "file" &&
+                          !messages[messages.length - 1].fileType?.startsWith("image/") &&
+                          messages[messages.length - 1].fileType !== "application/pdf" && (
+                            <p className="text-gray-300">
+                              📑 {messages[messages.length - 1].fileName}
+                            </p>
+                          )}
+                      </div>
                     </div>
                   )}
-
-                  <div className="overflow-y-auto rounded-b-xl max-h-[80vh] mt-10">
-                    {messages[messages.length - 1].type === "text" && (
-                      <SyntaxHighlighter
-                        language="javascript"
-                        style={oneDark}
-                        wrapLongLines
-                        className="rounded-lg text-base"
-                      >
-                        {messages[messages.length - 1].content}
-                      </SyntaxHighlighter>
-                    )}
-                    {messages[messages.length - 1].type === "file" &&
-                      messages[messages.length - 1].fileType?.startsWith("image/") && (
-                        <img
-                          src={messages[messages.length - 1].data}
-                          alt={messages[messages.length - 1].fileName}
-                          className="max-h-[70vh] mx-auto rounded-lg shadow-lg border"
-                        />
-                      )}
-                    {messages[messages.length - 1].type === "file" &&
-                      messages[messages.length - 1].fileType === "application/pdf" && (
-                        <embed
-                          src={messages[messages.length - 1].data}
-                          type="application/pdf"
-                          className="w-full h-[70vh] border rounded-lg shadow-lg"
-                        />
-                      )}
-                    {messages[messages.length - 1].type === "file" &&
-                      !messages[messages.length - 1].fileType?.startsWith("image/") &&
-                      messages[messages.length - 1].fileType !== "application/pdf" && (
-                        <p className="text-gray-300">
-                          📑 {messages[messages.length - 1].fileName}
-                        </p>
-                      )}
-
-                  </div>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
 
             <div ref={messagesEndRef} />
           </div>
